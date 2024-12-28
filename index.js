@@ -1,16 +1,40 @@
 const express = require('express');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 const app = express();
 require('dotenv').config()
 
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
-app.use(cors());
+app.use(cors({
+    origin: [
+        'http://localhost:5173',
+        'https://job-portal-7cbe4.web.app',
+        'https://job-portal-7cbe4.firebaseapp.com'
+    ],
+    credentials: true
+}));
 app.use(express.json());
+app.use(cookieParser());
 
+const verifyToken = (req, res, next) => {
+    const token = req.cookies?.token;
 
-// const uri = "mongodb+srv://job-portal:Sr8o3nUkxnMMG3PH@cluster0.ttzwe.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+    if (!token) {
+        return res.status(401).send({ message: 'unauthorized access' });
+    }
+
+    // verify the token
+    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(401).send({ message: 'unauthorized access' });
+        }
+        req.user = decoded;
+        next();
+    })
+}
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ttzwe.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -29,19 +53,53 @@ async function run() {
         // await client.connect();
         // Send a ping to confirm a successful connection
         // await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
+        // jobs related apis
         const jobsCollection = client.db('jobPortal').collection('jobs');
         const jobApplicationCollection = client.db('jobPortal').collection('job_applications');
+
+        // auth related APIs
+        app.post('/jwt', (req, res) => {
+            const user = req.body;
+            const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '10h' });
+
+            res
+                .cookie('token', token, {
+                    httpOnly: true,
+                    secure: process.env.NODE_ENV === 'production',
+                    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict'
+                })
+                .send({ success: true })
+
+        });
+
+        app.post('/logout', (req, res) => {
+            res
+                .clearCookie('token', {
+                    httpOnly: true,
+                    secure: process.env.NODE_ENV === 'production',
+                    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict'
+                })
+                .send({ success: true })
+        })
+
 
         // jobs related APIs
         app.get('/jobs', async (req, res) => {
             const email = req.query.email;
+            const sort = req.query?.sort;
             let query = {};
+            let sortQuery = {};
+            console.log(req.query);
             if (email) {
                 query = { hr_email: email }
             }
-            const cursor = jobsCollection.find(query);
+
+            if(sort == "true" ){
+                sortQuery= {"salaryRange.min" : -1}
+            }
+            const cursor = jobsCollection.find(query).sort(sortQuery);
             const result = await cursor.toArray();
             res.send(result);
         });
@@ -62,9 +120,16 @@ async function run() {
 
         // job application apis
         // get all data, get one data, get some data [o, 1, many]
-        app.get('/job-application', async (req, res) => {
+        app.get('/job-application', verifyToken, async (req, res) => {
             const email = req.query.email;
             const query = { applicant_email: email }
+
+            console.log(req.cookies?.token)
+            // token email !== query email
+            if (req.user.email !== req.query.email) {
+                return res.status(403).send({ message: 'forbidden access' })
+            }
+
             const result = await jobApplicationCollection.find(query).toArray();
 
             // fokira way to aggregate data
@@ -135,6 +200,7 @@ async function run() {
             const result = await jobApplicationCollection.updateOne(filter, updatedDoc);
             res.send(result)
         })
+
 
     } finally {
         // Ensures that the client will close when you finish/error
